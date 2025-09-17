@@ -1,0 +1,387 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TSST Researcher Mirror</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .screen-mirror { transition: opacity 0.5s ease-in-out; }
+        .hidden { display: none; }
+        .control-btn {
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            color: white;
+            transition: background-color 0.2s;
+            cursor: pointer;
+        }
+        .btn-start { background-color: #22c55e; } /* green-500 */
+        .btn-start:hover { background-color: #16a34a; } /* green-600 */
+        .btn-stop { background-color: #ef4444; } /* red-500 */
+        .btn-stop:hover { background-color: #dc2626; } /* red-600 */
+        .btn-reset { background-color: #64748b; } /* slate-500 */
+        .btn-reset:hover { background-color: #475569; } /* slate-600 */
+        .btn-next { background-color: #4f46e5; } /* indigo-600 */
+        .btn-next:hover { background-color: #4338ca; } /* indigo-700 */
+        .info-box {
+            border-left: 4px solid #e5e7eb; /* gray-200 */
+            padding-left: 1rem;
+            margin-top: 1.5rem;
+            text-align: left;
+        }
+        .info-box h3 {
+            font-weight: 700;
+            color: #4b5563; /* gray-600 */
+            margin-bottom: 0.5rem;
+        }
+        .info-box p, .info-box li {
+            color: #4b5563; /* gray-600 */
+        }
+        .script-text {
+            background-color: #f3f4f6; /* gray-100 */
+            border-left: 4px solid #6366f1; /* indigo-500 */
+            padding: 1rem;
+            font-style: italic;
+            border-radius: 0.25rem;
+            white-space: pre-wrap;
+        }
+
+    </style>
+</head>
+<body class="bg-gray-800 flex items-center justify-center min-h-screen p-4">
+
+    <div id="main-content" class="w-full">
+        <div id="app-container" class="bg-white p-6 sm:p-10 rounded-2xl shadow-2xl max-w-5xl w-full text-center relative transition-all duration-500 mx-auto">
+            
+            <!-- Session Input Screen -->
+            <div id="sessionInput" class="screen-mirror">
+                <h1 class="text-4xl font-extrabold text-gray-800 mb-4">TSST Researcher Mirror</h1>
+                <p class="text-gray-600 mb-6">Enter the 6-character Session ID from the participant's screen to connect.</p>
+                <div class="flex justify-center items-center gap-4">
+                    <input type="text" id="sessionIdField" maxlength="6" class="form-input text-center text-2xl font-mono uppercase w-48 px-4 py-2 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition">
+                    <button id="connectBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-8 rounded-lg text-lg shadow-lg transform hover:scale-105 transition-transform" onclick="connectToSession()">Connect</button>
+                </div>
+                <p id="error-message" class="text-red-500 mt-4 font-semibold h-6"></p>
+            </div>
+
+            <!-- Mirror View Container -->
+            <div id="mirror-view" class="hidden">
+                <div id="session-id-display" class="absolute top-6 left-6 bg-gray-200 text-gray-700 text-sm font-semibold px-4 py-2 rounded-lg"></div>
+                <div id="next-screen-container" class="absolute top-6 right-6"></div>
+
+                <!-- All Mirror Screens -->
+                <div id="welcome-mirror" class="screen-mirror hidden"></div>
+                <div id="preBaselineSurvey-mirror" class="screen-mirror hidden"></div>
+                <div id="baseline-mirror" class="screen-mirror hidden"></div>
+                <div id="speechPreparation-mirror" class="screen-mirror hidden"></div>
+                <div id="speechDelivery-mirror" class="screen-mirror hidden"></div>
+                <div id="mentalArithmetic-mirror" class="screen-mirror hidden"></div>
+                <div id="postTaskSurvey-mirror" class="screen-mirror hidden"></div>
+                <div id="meal-mirror" class="screen-mirror hidden"></div>
+                <div id="complete-mirror" class="screen-mirror hidden"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, setDoc, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
+        
+        let db, auth;
+        let unsubscribe = null;
+        let currentSessionId = null;
+        let currentGameState = {};
+        let sessionStartTime = null;
+        let heartbeatInterval = null;
+
+        const screenConfig = {
+            'welcome': { next: 'preBaselineSurvey', title: 'Start Protocol' },
+            'preBaselineSurvey': { next: 'baseline', title: 'Begin Baseline' },
+            'baseline': { next: 'speechPreparation', title: 'Go to Speech Prep', duration: 180 },
+            'speechPreparation': { next: 'speechDelivery', title: 'Begin Speech', duration: 300 },
+            'speechDelivery': { next: 'mentalArithmetic', title: 'Go to Math Task', duration: 300 },
+            'mentalArithmetic': { next: 'postTaskSurvey', title: 'End Math Task', duration: 300 },
+            'postTaskSurvey': { next: 'meal', title: 'Begin Meal' },
+            'meal': { next: 'complete', title: 'Finish Protocol', duration: 300 },
+            'complete': { next: null, title: null }
+        };
+
+        window.onload = function() {
+            const firebaseConfig = {
+                apiKey: "AIzaSyC-Yc9Vr2aWSc1u8YCNVFk48ijcix2Sg2c",
+                authDomain: "tsst-d6836.firebaseapp.com",
+                projectId: "tsst-d6836",
+                storageBucket: "tsst-d6836.appspot.com",
+                messagingSenderId: "55426434749",
+                appId: "1:55426434749:web:441d29af1ce3529a6019d4"
+            };
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                setLogLevel('error');
+                signInAnonymously(auth).catch(error => console.error("Researcher auth error:", error));
+            } catch (e) {
+                console.error("Firebase initialization failed:", e);
+                document.getElementById('main-content').innerHTML = `<div class="bg-white p-8 rounded-lg shadow-xl"><h1 class="text-2xl font-bold text-red-600">Error: Could not connect to the server.</h1></div>`;
+            }
+        };
+
+        function sendCommand(command) {
+            if (!currentSessionId) return;
+            const appId = "tsst-d6836";
+            const sessionRef = doc(db, `artifacts/${appId}/public/data/sessions`, currentSessionId);
+            const commandWithId = { ...command, commandId: crypto.randomUUID(), issuedAt: serverTimestamp() };
+            setDoc(sessionRef, { command: commandWithId }, { merge: true });
+        }
+        window.sendCommand = sendCommand;
+
+        function startHeartbeat() {
+            stopHeartbeat(); // Ensure no multiple intervals are running
+            heartbeatInterval = setInterval(() => {
+                if (currentSessionId) {
+                    const appId = "tsst-d6836";
+                    const sessionRef = doc(db, `artifacts/${appId}/public/data/sessions`, currentSessionId);
+                    setDoc(sessionRef, { researcherHeartbeat: serverTimestamp() }, { merge: true });
+                }
+            }, 30000); // Send an update every 30 seconds
+        }
+
+        function stopHeartbeat() {
+            clearInterval(heartbeatInterval);
+        }
+
+        window.connectToSession = () => {
+            const sessionId = document.getElementById('sessionIdField').value.trim().toUpperCase();
+            const errorEl = document.getElementById('error-message');
+            const appId = "tsst-d6836";
+            
+            if (sessionId.length !== 6) {
+                errorEl.textContent = 'Please enter a valid 6-character Session ID.';
+                return;
+            }
+            errorEl.textContent = 'Connecting...';
+            
+            if (unsubscribe) unsubscribe();
+            stopHeartbeat();
+
+            currentSessionId = sessionId;
+            const sessionRef = doc(db, `artifacts/${appId}/public/data/sessions`, sessionId);
+            
+            unsubscribe = onSnapshot(sessionRef, (doc) => {
+                if (doc.exists()) {
+                    if (!sessionStartTime) {
+                        sessionStartTime = new Date();
+                        startHeartbeat();
+                    }
+                    errorEl.textContent = '';
+                    document.getElementById('sessionInput').style.display = 'none';
+                    document.getElementById('mirror-view').style.display = 'block';
+                    renderState(doc.data());
+                } else {
+                    errorEl.textContent = `Session "${sessionId}" not found. Please check the ID.`;
+                    document.getElementById('sessionInput').style.display = 'block';
+                    document.getElementById('mirror-view').style.display = 'none';
+                    if(unsubscribe) unsubscribe();
+                    stopHeartbeat();
+                }
+            }, (error) => {
+                console.error("Snapshot error:", error);
+                errorEl.textContent = "Error connecting to the session.";
+                stopHeartbeat();
+            });
+        }
+        
+        function renderState(newState) {
+            const oldState = currentGameState;
+            currentGameState = newState;
+
+            const screenChanged = newState.screenId !== oldState.screenId;
+            const preStressChanged = newState.stressResponsePre !== oldState.stressResponsePre;
+            const postStressChanged = newState.stressResponsePost !== oldState.stressResponsePost;
+
+            if (screenChanged || (newState.screenId === 'preBaselineSurvey' && preStressChanged) || (newState.screenId === 'postTaskSurvey' && postStressChanged)) {
+                document.querySelectorAll('.screen-mirror').forEach(el => el.classList.add('hidden'));
+                const currentScreenEl = document.getElementById(`${newState.screenId}-mirror`);
+                if (currentScreenEl) {
+                    currentScreenEl.innerHTML = getScreenHtml(newState);
+                    currentScreenEl.classList.remove('hidden');
+                }
+                const config = screenConfig[newState.screenId] || {};
+                const nextScreenContainer = document.getElementById('next-screen-container');
+                 if (config.next) {
+                    nextScreenContainer.innerHTML = `<button class="control-btn btn-next" onclick="sendCommand({type: 'screen', screenId: '${config.next}'})">${config.title}</button>`;
+                } else {
+                    nextScreenContainer.innerHTML = '';
+                }
+            } else {
+                updateDynamicContent(newState);
+            }
+            document.getElementById('session-id-display').innerHTML = `Mirroring Session: <span class="font-bold">${newState.sessionId || ''}</span>`;
+        }
+
+        function updateDynamicContent(state) {
+            const timerValue = state.timer?.value;
+            const timerEl = document.querySelector(`#${state.screenId}-mirror .timer-display`);
+            if (timerEl && timerEl.textContent !== timerValue) {
+                timerEl.textContent = timerValue;
+            }
+
+            const isRunning = state.timer?.running;
+            const startBtn = document.querySelector(`#${state.screenId}-mirror .btn-start`);
+            const stopBtn = document.querySelector(`#${state.screenId}-mirror .btn-stop`);
+            if(startBtn) startBtn.classList.toggle('hidden', isRunning);
+            if(stopBtn) stopBtn.classList.toggle('hidden', !isRunning);
+        }
+
+        function getStressResponseHtml(state) {
+            let response = null;
+            if (state.screenId === 'preBaselineSurvey') {
+                response = state.stressResponsePre;
+            } else if (state.screenId === 'postTaskSurvey') {
+                response = state.stressResponsePost;
+            }
+
+            if (response) {
+                return `
+                    <div class="mt-6 p-4 bg-green-100 border-2 border-green-300 rounded-lg text-left">
+                        <h4 class="font-bold text-green-800 text-lg">Participant's Stress Response:</h4>
+                        <p class="text-2xl text-green-900 font-semibold">${response}</p>
+                    </div>
+                `;
+            } else {
+                return `
+                    <div class="mt-6 p-4 bg-yellow-100 border-2 border-yellow-300 rounded-lg text-left">
+                        <p class="text-yellow-800 font-semibold">Waiting for participant to select a stress level...</p>
+                    </div>
+                `;
+            }
+        }
+
+        function getScreenHtml(state) {
+            const screenId = state.screenId;
+            let config = {};
+
+            const allConfigs = {
+                'welcome': {
+                    title: 'Introduction & Pre-Test', participantSees: "Participant is at the welcome screen.", hasTimer: false,
+                    script: `"Hi, I'm going to be administering your challenge today as part of your participation in the BETA Pilot Study. The purpose of this test is to better understand the association between stress and blood glucose levels.\n\nBefore we begin, I'd like to confirm a few things. Firstly, could you please ensure that your video window is expanded to full screen? Can you hear and see me well?\n\nThis challenge should take about 30 minutes and thereafter you'll be expected to consume the (e.g., [see challenge tracker for type of beverage]) beverage provided to you and will have to refrain from exercise activities for 90 minutes. Ideally, you stay seated for this time. Do you still have adequate time this morning to complete this full procedure?\n\nDo you have the provided beverage nearby, ready to consume?\n\nYou are expected to fast for 10 hours prior to this challenge, and reduce stress-inducing activities prior to. Were you able to fast? Is there anything you did this morning that you want to mention that involved strenuous exercise, or a stressful exposure?\n\nPlease put your phone on silent for the duration of this procedure, and avoid looking at or checking your phone unless instructed by me.\n\nLastly, could you confirm that you are wearing all of your study devices. This includes the Empatica EmbracePlus, the Oura ring, and the CGM. Are the devices all charged and working?"`,
+                    actions: ["Confirm participant can see and hear you.", "Confirm they have adequate time and the beverage nearby.", "Confirm fasting, activity, and device status.", "Document how well the participant was able to follow the pre-challenge instructions and any deviations (e.g., if they didn't fast, what did they consume and when?)."]
+                },
+                'preBaselineSurvey': {
+                    title: 'Stress Baseline Survey', participantSees: "Participant is being asked to select their stress level.", hasTimer: false,
+                    script: `"Next I'm going to ask you to rate your current stress levels using the scale provided on the screen. Please click on the option that best describes how you feel.\n\nNow we're going to begin.\n\nI'm going to start recording the call now so that your performance on the upcoming tasks can be later scored by additional evaluators."`,
+                    actions: ["<strong>Start recording the call.</strong>", "Wait for participant to make a selection before proceeding."]
+                },
+                'baseline': {
+                    title: 'Resting Baseline', participantSees: "Participant sees a 3-minute timer and instructions to relax.", hasTimer: true, timerDefault: '3:00',
+                    script: `"For the next 3 minutes, please remain seated. Relax, and try to clear your mind, and remain still and quiet. You can leave your eyes open, or close them if you prefer. Please leave your camera on for the duration of this procedure. I'm going to step away, but we will still be monitoring you."`,
+                    actions: ["Turn off your video, but continue to monitor participant.", "When timer ends, turn camera back on and say: \"We’ll now move to the next phase.\""]
+                },
+                'speechPreparation': {
+                    title: 'Speech Preparation', participantSees: "Participant sees a 5-minute timer and instructions to prepare a speech.", hasTimer: true, timerDefault: '5:00',
+                    script: `"We're going to be assessing how well you perform in situations where you must project yourself as an expert. This is a type of personality test. I'd like you to use the imaginary situation where you will be applying for your dream job. Please imagine this ideal job. You will have 5 minutes to prepare a persuasive speech to convince me and an additional jury that you are the best candidate for this dream job as if you were applying for this job and were invited for an interview. After that you will have 5 minutes to give the speech. Please think silently, and refrain from taking any notes or writing anything down (and I'll be checking in on that). Your speech will be recorded for later evaluation by additional trained raters and there may be some follow-up questions once you complete your speech if time allows. Once I turn off my camera and start the 5 minute timer, your preparation will begin. The timer on the screen will let you know how much time you have left."`,
+                    actions: ["Turn off your video camera.", "Start the timer.", "When timer ends, turn camera back on and say: \"Please remain seated; we'll begin your speech in just a moment.\""]
+                },
+                'speechDelivery': {
+                    title: 'Speech Delivery', participantSees: "Participant sees a 5-minute timer and instructions to deliver their speech.", hasTimer: true, timerDefault: '5:00',
+                    script: `"Please begin your 5-minute speech. Remember, no notes. I will start the timer now."`,
+                    actions: ["Start the timer.", "Observe participant, maintaining a neutral, unresponsive demeanor.", "If participant stops early, use questions from Appendix A below.", `When timer ends, state: <strong>"your time is up, please stop your speech".</strong>`],
+                    context: "If the participant begins to ask questions about their speech, reiterate that they are explaining why they are the best candidate for the job, and 'do what they think is best', or 'say whatever comes to your mind'. Continue to redirect the participant to begin this speech.",
+                    appendix: { title: 'Follow-up Questions (Appendix A)', content: `"Give me the most significant mistake you’ve made in your career. What exactly did you do wrong, and how did it affect your results?"\n\n"Describe a situation where a supervisor criticized your work. What was the criticism, and why should we trust that you’ve truly fixed the issue?"\n\n"Convince me that hiring you won’t be a risk to our organization’s reputation."\n\n"Explain the biggest gap or setback in your career and why it shouldn’t count against you compared with other applicants."\n\n"Tell me about a time you let a client or stakeholder down. What did you do to recover, and why shouldn’t we worry that it could happen here?"\n\n"Which core competency for this role is currently your weakest, and what concrete evidence shows you can overcome that weakness under pressure?"\n\n"If we surveyed your last team today, what would be the harshest piece of feedback they’d give about your leadership style?"\n\n"Assume you’re not selected for this position. What personal failing would most likely have caused that outcome?"` }
+                },
+                'mentalArithmetic': {
+                    title: 'Mental Arithmetic', participantSees: "Participant sees a 5-minute timer and instructions for the math task.", hasTimer: true, timerDefault: '5:00',
+                    script: `"We will now begin a mental math challenge. Starting from the number 2,023, I'd like you to subtract 17 repeatedly, speaking each result aloud as quickly and accurately as possible. For example, if you were starting from 10 and subtracting by 2, you would say: '10, 8, 6, 4,' and so on. If you make an error, you will be instructed to return to 2,023 and start again. You have five minutes. Okay, now begin subtracting 17 repeatedly from 2,023."`,
+                    actions: ["Start the timer.", "Track answers using the answer sheet below.", `If a participant provides an incorrect answer, state: <strong>"That is incorrect. Please start over at 2,023"</strong> when needed.`],
+                    appendix: { title: 'Answer Key (Appendix B)', content: `2023, 2006, 1989, 1972, 1955, 1938, 1921, 1904, 1887, 1870, 1853, 1836, 1819, 1802, 1785, 1768, 1751, 1734, 1717, 1700, 1683, 1666, 1649, 1632, 1615, 1598, 1581, 1564, 1547, 1530, 1513, 1496, 1479, 1462, 1445, 1428, 1411, 1394, 1377, 1360, 1343, 1326, 1309, 1292, 1275, 1258, 1241, 1224, 1207, 1190, 1173, 1156, 1139, 1122, 1105, 1088, 1071, 1054, 1037, 1020, 1003, 986, 969, 952, 935, 918, 901, 884, 867, 850, 833, 816, 799, 782, 765, 748, 731, 714, 697, 680, 663, 646, 629, 612, 595, 578, 561, 544, 527, 510, 493, 476, 459, 442, 425, 408, 391, 374, 357, 340, 323, 306, 289, 272, 255, 238, 221, 204, 187, 170, 153, 136, 119, 102, 85, 68, 51, 34, 17, 0` }
+                },
+                'postTaskSurvey': {
+                    title: 'Post-Task Stress Survey', participantSees: "Participant is being asked to select their stress level again.", hasTimer: false,
+                    script: `"That concludes the performance tasks.\n\nI'm going to ask you to again rate your current level of stress using the options on the screen."`,
+                    actions: ["Wait for the participant to confirm they have selected their stress level."]
+                },
+                'meal': {
+                    title: 'Post-Task Meal', participantSees: "Participant sees a 5-minute timer and instructions to consume the beverage.", hasTimer: true, timerDefault: '5:00',
+                    script: `"Please consume the provided liquid meal within five minutes. I will wait until you're finished. Please leave your camera on"`,
+                    actions: ["Start the 5-minute meal timer.", "Observe participant during consuming meal until timer reaches 00:00."],
+                    context: "The participant needs to drink the entire beverage within 5 minutes. You can explain or express the significance of this if they are taking longer than usual. Drinks should also not be consumed in too short a time. Aim for approximately 5 minutes across all participants."
+                },
+                'complete': {
+                    title: 'Debrief & Close', participantSees: "Participant sees the 'Challenge Complete' screen.", hasTimer: false,
+                    script: `"Thank you for completing today's tasks. For the next 90 mins, until approximately [END_TIME], please stay seated as much as possible and avoid food, beverages, and strenuous or stressful activity. After that 90 min period, you may resume your normal routine. If your blood sugar falls out of range, either below 70 mg/dL or above 250 mg/dL, please treat as needed and contact the study coordinator. Do you have any questions before we end?"`,
+                    actions: ["Stop recording, end video call.", "If Final Challenge: Complete a debrief (Appendix C)."]
+                }
+            };
+            
+            config = allConfigs[screenId];
+            if (!config) return '<div>Error: Screen configuration not found.</div>';
+
+            if (screenId === 'complete') {
+                let endTimeString = '(Time will be calculated upon connection)';
+                if (sessionStartTime) {
+                    let endTime = new Date(sessionStartTime.getTime() + (2 * 60 * 60 * 1000));
+                    if (state.timezoneOffset !== undefined) {
+                        const researcherOffset = sessionStartTime.getTimezoneOffset();
+                        const participantOffset = state.timezoneOffset;
+                        const offsetDifferenceMs = (researcherOffset - participantOffset) * 60 * 1000;
+                        endTime = new Date(endTime.getTime() + offsetDifferenceMs);
+                    }
+                    endTimeString = endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                }
+                config.script = config.script.replace('[END_TIME]', endTimeString);
+            }
+
+            const isRunning = state.timer && state.timer.running;
+            const timerControls = config.hasTimer ? `
+                <div class="flex justify-center items-center gap-4 mt-6">
+                    <button class="control-btn btn-start ${isRunning ? 'hidden' : ''}" onclick="sendCommand({type: 'timer', action: 'start'})">Start</button>
+                    <button class="control-btn btn-stop ${!isRunning ? 'hidden' : ''}" onclick="sendCommand({type: 'timer', action: 'stop'})">Stop</button>
+                    <button class="control-btn btn-reset" onclick="sendCommand({type: 'timer', action: 'reset'})">Reset</button>
+                </div>` : '';
+            
+            const appendixHtml = config.appendix ? `
+                <div class="mt-4">
+                    <h3>${config.appendix.title}</h3>
+                    <div class="p-2 border rounded-md bg-gray-50 text-sm text-gray-700 h-32 overflow-y-auto font-mono" style="white-space: pre-wrap; word-wrap: break-word;">${config.appendix.content}</div>
+                </div>
+            ` : '';
+
+            const contextHtml = config.context ? `
+                <div class="mt-4">
+                    <h3>Context</h3>
+                    <p class="text-sm">${config.context}</p>
+                </div>
+            ` : '';
+
+            const stressResponseHtml = (screenId === 'preBaselineSurvey' || screenId === 'postTaskSurvey') ? getStressResponseHtml(state) : '';
+
+            return `
+                <div class="max-w-4xl mx-auto pt-12">
+                    <h2 class="text-3xl font-bold text-gray-800 mb-2">${config.title}</h2>
+                    <p class="text-gray-500 mb-6">${config.participantSees}</p>
+                    ${stressResponseHtml}
+                    ${config.hasTimer ? `<div class="text-8xl font-mono font-bold my-4 text-gray-800 timer-display">${state.timer?.value || config.timerDefault}</div>` : ''}
+                    ${timerControls}
+                    <div class="info-box">
+                        <h3>Researcher Script</h3>
+                        <div class="script-text mb-4">${config.script}</div>
+                        <h3>RC Instructions</h3>
+                        <ul class="list-disc list-inside space-y-1">${config.actions.map(a => `<li>${a}</li>`).join('')}</ul>
+                        ${contextHtml}
+                        ${appendixHtml}
+                    </div>
+                </div>
+            `;
+        }
+    </script>
+</body>
+</html>
