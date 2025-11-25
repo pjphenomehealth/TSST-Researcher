@@ -338,6 +338,17 @@
             if (screenId === 'complete') {
                 let endTimeString = '(Time will be calculated upon connection)';
 
+                if (sessionStartTime) {
+                    let endTime = new Date(sessionStartTime.getTime() + (2 * 60 * 60 * 1000));
+                    if (state.timezoneOffset !== undefined) {
+                        const researcherOffset = sessionStartTime.getTimezoneOffset();
+                        const participantOffset = state.timezoneOffset;
+                        const offsetDifferenceMs = (researcherOffset - participantOffset) * 60 * 1000;
+                        endTime = new Date(endTime.getTime() + offsetDifferenceMs);
+                    }
+                    endTimeString = endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                }
+                
                 const endTimeString = state.endTimeString || '(participant local time)';
                 config.script = config.script.replace('[END_TIME]', endTimeString);
             }
